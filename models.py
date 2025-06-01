@@ -37,6 +37,22 @@ class TransformerEncoder(nn.Module):
             src = layer(src)
         return src
 
+class Affine_MLP(nn.Module):
+    def __init__(self, num_dim, hidden_dim, output_dim):
+        super(Affine_MLP, self).__init__()
+        self.num_dim = num_dim
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
+        self.bulid()
+    def bulid(self):
+        self.mlp = nn.Sequential(
+            nn.Linear(self.num_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.output_dim)
+        )
+    def forward(self, x):
+        return self.mlp(x)
+        
 class Numerator(nn.Module):
     def __init__(self, num_layers, d_model, num_heads, d_ff, max_length, dropout=0.1):
         super(Numerator, self).__init__()
@@ -46,9 +62,9 @@ class Numerator(nn.Module):
         self.scoring_layer1 = nn.Linear(d_model, 4096)
         self.scoring_layer2 = nn.Linear(4096, 1)
         self.value_encoding_layer = nn.Linear(64, d_model)
-        # self.output_layer_1 = nn.Linear(d_model, 4096)
-        # self.output_layer_2 = nn.Linear(4096, 1)
-        # self.path_length_encoding_layer = nn.Linear(1, d_model)
+        self.affine_k = Affine_MLP(d_model, d_ff, d_model)
+        self.affine_b = Affine_MLP(d_model, d_ff, d_model)
+
         self.output_layer_1 = nn.Linear(d_model, int(d_model * 2))
         self.output_layer_2 = nn.Linear(int(d_model * 2), 1)
 
@@ -58,17 +74,16 @@ class Numerator(nn.Module):
         value_embedding = value_embedding
         path_embedding = self.path_encoding_layer(src)
         path_embedding = path_embedding[torch.arange(reg_token_indices.shape[0]), reg_token_indices]
-        value_embedding = path_embedding * value_embedding
+        value_k = self.affine_k(value_embedding)
+        value_b = self.affine_b(value_embedding)
+        # pdb.set_trace()
+        value_embedding = path_embedding * value_k + value_b
         output = self.output_layer_1(value_embedding)
         output = self.output_layer_2(F.relu(output))
         query_counts = torch.bincount(path_counts)[0]
-        # path_length_embedding = self.path_length_encoding_layer(reg_token_indices.unsqueeze(-1).float())
         path_embedding = path_embedding.reshape(-1, query_counts, path_embedding.shape[-1])
-        # path_length_embedding = path_length_embedding.reshape(-1, query_counts, path_length_embedding.shape[-1])
-        # path_embedding = path_embedding + path_length_embedding
         path_scores = self.path_reweighting_layer(path_embedding)
         path_scores = self.scoring_layer1(path_scores)
         path_scores = self.scoring_layer2(F.relu(path_scores))
         path_scores = F.softmax(path_scores.squeeze(), dim=1)
-        # output = output[:, reg_token_indices]
         return output, path_scores.reshape(-1, 1)
